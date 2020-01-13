@@ -39,6 +39,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 配置汇总 传递给文件生成工具
@@ -64,6 +66,7 @@ public class ConfigBuilder {
      * SQL语句类型
      */
     private IDbQuery dbQuery;
+    private DbType dbType;
     private String superEntityClass;
     private String superMapperClass;
     /**
@@ -100,6 +103,10 @@ public class ConfigBuilder {
      * 是否支持注释
      */
     private boolean commentSupported;
+    /**
+     * 过滤正则
+     */
+    private static final Pattern REGX = Pattern.compile("[~!/@#$%^&*()-_=+\\\\|[{}];:\\'\\\",<.>/?]+");
 
     /**
      * 在构造器中处理配置
@@ -269,6 +276,7 @@ public class ConfigBuilder {
      */
     private void handlerDataSource(DataSourceConfig config) {
         connection = config.getConn();
+        dbType = config.getDbType();
         dbQuery = config.getDbQuery();
     }
 
@@ -404,6 +412,9 @@ public class ConfigBuilder {
         if (isInclude && isExclude) {
             throw new RuntimeException("<strategy> 标签中 <include> 与 <exclude> 只能配置一项！");
         }
+        if (config.getNotLikeTable() != null && config.getLikeTable() != null) {
+            throw new RuntimeException("<strategy> 标签中 <likeTable> 与 <notLikeTable> 只能配置一项！");
+        }
         //所有的表信息
         List<TableInfo> tableList = new ArrayList<>();
 
@@ -415,7 +426,7 @@ public class ConfigBuilder {
         Set<String> notExistTables = new HashSet<>();
         try {
             String tablesSql = dbQuery.tablesSql();
-            if (DbType.POSTGRE_SQL == dbQuery.dbType()) {
+            if (DbType.POSTGRE_SQL == this.dbType) {
                 String schema = dataSourceConfig.getSchemaName();
                 if (schema == null) {
                     //pg 默认 schema=public
@@ -423,8 +434,7 @@ public class ConfigBuilder {
                     dataSourceConfig.setSchemaName(schema);
                 }
                 tablesSql = String.format(tablesSql, schema);
-            }
-            if (DbType.KINGBASE_ES == dbQuery.dbType()) {
+            } else if (DbType.KINGBASE_ES == this.dbType) {
                 String schema = dataSourceConfig.getSchemaName();
                 if (schema == null) {
                     //kingbase 默认 schema=PUBLIC
@@ -432,8 +442,7 @@ public class ConfigBuilder {
                     dataSourceConfig.setSchemaName(schema);
                 }
                 tablesSql = String.format(tablesSql, schema);
-            }
-            if (DbType.DB2 == dbQuery.dbType()) {
+            } else if (DbType.DB2 == this.dbType) {
                 String schema = dataSourceConfig.getSchemaName();
                 if (schema == null) {
                     //db2 默认 schema=current schema
@@ -443,7 +452,7 @@ public class ConfigBuilder {
                 tablesSql = String.format(tablesSql, schema);
             }
             //oracle数据库表太多，出现最大游标错误
-            else if (DbType.ORACLE == dbQuery.dbType()) {
+            else if (DbType.ORACLE == this.dbType) {
                 String schema = dataSourceConfig.getSchemaName();
                 //oracle 默认 schema=username
                 if (schema == null) {
@@ -451,22 +460,24 @@ public class ConfigBuilder {
                     dataSourceConfig.setSchemaName(schema);
                 }
                 tablesSql = String.format(tablesSql, schema);
+            }
+            StringBuilder sql = new StringBuilder(tablesSql);
+            if (config.isEnableSqlFilter()) {
+                if (config.getLikeTable() != null) {
+                    sql.append(" AND ").append(dbQuery.tableName()).append(" LIKE '").append(config.getLikeTable().getValue()).append("'");
+                } else if (config.getNotLikeTable() != null) {
+                    sql.append(" AND ").append(dbQuery.tableName()).append(" NOT LIKE '").append(config.getNotLikeTable().getValue()).append("'");
+                }
                 if (isInclude) {
-                    StringBuilder sb = new StringBuilder(tablesSql);
-                    sb.append(" AND ").append(dbQuery.tableName()).append(" IN (");
-                    Arrays.stream(config.getInclude()).forEach(tbname -> sb.append(StringPool.SINGLE_QUOTE).append(tbname.toUpperCase()).append("',"));
-                    sb.replace(sb.length() - 1, sb.length(), StringPool.RIGHT_BRACKET);
-                    tablesSql = sb.toString();
+                    sql.append(" AND ").append(dbQuery.tableName()).append(" IN (")
+                        .append(Arrays.stream(config.getInclude()).map(tb -> "'" + tb + "'").collect(Collectors.joining(","))).append(")");
                 } else if (isExclude) {
-                    StringBuilder sb = new StringBuilder(tablesSql);
-                    sb.append(" AND ").append(dbQuery.tableName()).append(" NOT IN (");
-                    Arrays.stream(config.getExclude()).forEach(tbname -> sb.append(StringPool.SINGLE_QUOTE).append(tbname.toUpperCase()).append("',"));
-                    sb.replace(sb.length() - 1, sb.length(), StringPool.RIGHT_BRACKET);
-                    tablesSql = sb.toString();
+                    sql.append(" AND ").append(dbQuery.tableName()).append(" NOT IN (")
+                        .append(Arrays.stream(config.getExclude()).map(tb -> "'" + tb + "'").collect(Collectors.joining(","))).append(")");
                 }
             }
             TableInfo tableInfo;
-            try (PreparedStatement preparedStatement = connection.prepareStatement(tablesSql);
+            try (PreparedStatement preparedStatement = connection.prepareStatement(sql.toString());
                  ResultSet results = preparedStatement.executeQuery()) {
                 while (results.next()) {
                     String tableName = results.getString(dbQuery.tableName());
@@ -489,7 +500,10 @@ public class ConfigBuilder {
                                 if (tableNameMatches(includeTable, tableName)) {
                                     includeTableList.add(tableInfo);
                                 } else {
-                                    notExistTables.add(includeTable);
+                                    //过滤正则表名
+                                    if (!REGX.matcher(includeTable).find()) {
+                                        notExistTables.add(includeTable);
+                                    }
                                 }
                             }
                         } else if (isExclude) {
@@ -498,7 +512,10 @@ public class ConfigBuilder {
                                 if (tableNameMatches(excludeTable, tableName)) {
                                     excludeTableList.add(tableInfo);
                                 } else {
-                                    notExistTables.add(excludeTable);
+                                    //过滤正则表名
+                                    if (!REGX.matcher(excludeTable).find()) {
+                                        notExistTables.add(excludeTable);
+                                    }
                                 }
                             }
                         }
@@ -556,7 +573,7 @@ public class ConfigBuilder {
         boolean haveId = false;
         List<TableField> fieldList = new ArrayList<>();
         List<TableField> commonFieldList = new ArrayList<>();
-        DbType dbType = dbQuery.dbType();
+        DbType dbType = this.dbType;
         String tableName = tableInfo.getName();
         try {
             String tableFieldsSql = dbQuery.tableFieldsSql();
@@ -579,7 +596,7 @@ public class ConfigBuilder {
                      ResultSet pkResults = pkQueryStmt.executeQuery()) {
                     while (pkResults.next()) {
                         String primaryKey = pkResults.getString(dbQuery.fieldKey());
-                        if (Boolean.valueOf(primaryKey)) {
+                        if (Boolean.parseBoolean(primaryKey)) {
                             h2PkColumns.add(pkResults.getString(dbQuery.fieldName()));
                         }
                     }

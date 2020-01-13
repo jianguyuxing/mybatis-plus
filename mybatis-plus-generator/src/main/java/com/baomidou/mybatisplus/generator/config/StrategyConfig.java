@@ -17,6 +17,7 @@ package com.baomidou.mybatisplus.generator.config;
 
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.core.toolkit.StringUtils;
+import com.baomidou.mybatisplus.generator.config.po.LikeTable;
 import com.baomidou.mybatisplus.generator.config.po.TableFill;
 import com.baomidou.mybatisplus.generator.config.rules.NamingStrategy;
 import lombok.AccessLevel;
@@ -95,12 +96,14 @@ public class StrategyConfig {
      */
     private String superControllerClass;
     /**
-     * 需要包含的表名，允许正则表达式（与exclude二选一配置）
+     * 需要包含的表名（与exclude二选一配置）
+     * @since 3.3.0 正则匹配不再支持,请使用{@link #setLikeTable(LikeTable)}}
      */
     @Setter(AccessLevel.NONE)
     private String[] include = null;
     /**
-     * 需要排除的表名，允许正则表达式
+     * 需要排除的表名
+     * @since 3.3.0 正则匹配不再支持,请使用{@link #setNotLikeTable(LikeTable)}}
      */
     @Setter(AccessLevel.NONE)
     private String[] exclude = null;
@@ -160,6 +163,26 @@ public class StrategyConfig {
      * 表填充字段
      */
     private List<TableFill> tableFillList = null;
+    /**
+     * 启用sql过滤
+     * 语法不能支持使用sql过滤表的话，可以考虑关闭此开关.
+     * 目前所知微软系需要关闭，其他数据库等待反馈，sql可能要改动一下才能支持，没数据库环境搞，请手动关闭使用内存过滤的方式。
+     *
+     * @since 3.3.1
+     */
+    private boolean enableSqlFilter = true;
+    /**
+     * 包含表名
+     *
+     * @since 3.3.0
+     */
+    private LikeTable likeTable;
+    /**
+     * 不包含表名
+     *
+     * @since 3.3.0
+     */
+    private LikeTable notLikeTable;
 
     /**
      * 大写命名、字段符合大写字母数字下划线命名
@@ -200,7 +223,8 @@ public class StrategyConfig {
 
     public boolean includeSuperEntityColumns(String fieldName) {
         if (null != superEntityColumns) {
-            return Arrays.asList(superEntityColumns).contains(fieldName);
+            // 公共字段判断忽略大小写【 部分数据库大小写不敏感 】
+            return Arrays.stream(superEntityColumns).anyMatch(e -> e.equalsIgnoreCase(fieldName));
         }
         return false;
     }
@@ -266,12 +290,14 @@ public class StrategyConfig {
         return this;
     }
 
-    public void setSuperControllerClass(Class<?> clazz) {
+    public StrategyConfig setSuperControllerClass(Class<?> clazz) {
         this.superControllerClass = clazz.getName();
+        return this;
     }
 
-    public void setSuperControllerClass(String superControllerClass) {
+    public StrategyConfig setSuperControllerClass(String superControllerClass) {
         this.superControllerClass = superControllerClass;
+        return this;
     }
 
     /**

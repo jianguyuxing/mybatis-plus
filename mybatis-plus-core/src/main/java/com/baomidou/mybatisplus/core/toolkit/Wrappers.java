@@ -158,6 +158,16 @@ public final class Wrappers {
         }
 
         @Override
+        public QueryWrapper<T> setEntityClass(Class<T> entityClass) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        protected Class<T> getEntityClass() {
+            return null;
+        }
+
+        @Override
         public String getSqlSelect() {
             return null;
         }
@@ -188,12 +198,7 @@ public final class Wrappers {
         }
 
         @Override
-        protected void initEntityClass() {
-        }
-
-        @Override
-        protected Class<T> getCheckEntityClass() {
-            throw new UnsupportedOperationException();
+        protected void initNeed() {
         }
 
         @Override
@@ -228,6 +233,11 @@ public final class Wrappers {
 
         @Override
         protected EmptyWrapper<T> instance() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void clear() {
             throw new UnsupportedOperationException();
         }
     }

@@ -25,7 +25,11 @@ import org.apache.ibatis.executor.keygen.KeyGenerator;
 import org.apache.ibatis.executor.keygen.SelectKeyGenerator;
 import org.apache.ibatis.logging.Log;
 import org.apache.ibatis.logging.LogFactory;
-import org.apache.ibatis.mapping.*;
+import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.mapping.ResultMap;
+import org.apache.ibatis.mapping.SqlCommandType;
+import org.apache.ibatis.reflection.Reflector;
+import org.apache.ibatis.reflection.ReflectorFactory;
 import org.apache.ibatis.scripting.LanguageDriver;
 import org.apache.ibatis.session.Configuration;
 
@@ -130,10 +134,12 @@ public class TableInfoHelper {
         }
 
         /* 初始化表名相关 */
-        initTableName(clazz, globalConfig, tableInfo);
+        final String[] excludeProperty = initTableName(clazz, globalConfig, tableInfo);
+
+        List<String> excludePropertyList = excludeProperty != null && excludeProperty.length > 0 ? Arrays.asList(excludeProperty) : Collections.emptyList();
 
         /* 初始化字段相关 */
-        initTableFields(clazz, globalConfig, tableInfo);
+        initTableFields(clazz, globalConfig, tableInfo, excludePropertyList);
 
         /* 放入缓存 */
         TABLE_INFO_CACHE.put(clazz, tableInfo);
@@ -155,8 +161,9 @@ public class TableInfoHelper {
      * @param clazz        实体类
      * @param globalConfig 全局配置
      * @param tableInfo    数据库表反射信息
+     * @return 需要排除的字段名
      */
-    private static void initTableName(Class<?> clazz, GlobalConfig globalConfig, TableInfo tableInfo) {
+    private static String[] initTableName(Class<?> clazz, GlobalConfig globalConfig, TableInfo tableInfo) {
         /* 数据库全局配置 */
         GlobalConfig.DbConfig dbConfig = globalConfig.getDbConfig();
         TableName table = clazz.getAnnotation(TableName.class);
@@ -165,6 +172,7 @@ public class TableInfoHelper {
         String tablePrefix = dbConfig.getTablePrefix();
         String schema = dbConfig.getSchema();
         boolean tablePrefixEffect = true;
+        String[] excludeProperty = null;
 
         if (table != null) {
             if (StringUtils.isNotBlank(table.value())) {
@@ -183,6 +191,7 @@ public class TableInfoHelper {
                 tableInfo.setResultMap(table.resultMap());
             }
             tableInfo.setAutoInitResultMap(table.autoResultMap());
+            excludeProperty = table.excludeProperty();
         } else {
             tableName = initTableNameWithDbConfig(tableName, dbConfig);
         }
@@ -201,6 +210,7 @@ public class TableInfoHelper {
         if (null != dbConfig.getKeyGenerator()) {
             tableInfo.setKeySequence(clazz.getAnnotation(KeySequence.class));
         }
+        return excludeProperty;
     }
 
     /**
@@ -235,9 +245,12 @@ public class TableInfoHelper {
      * @param globalConfig 全局配置
      * @param tableInfo    数据库表反射信息
      */
-    public static void initTableFields(Class<?> clazz, GlobalConfig globalConfig, TableInfo tableInfo) {
+    public static void initTableFields(Class<?> clazz, GlobalConfig globalConfig, TableInfo tableInfo, List<String> excludeProperty) {
         /* 数据库全局配置 */
         GlobalConfig.DbConfig dbConfig = globalConfig.getDbConfig();
+        ReflectorFactory reflectorFactory = tableInfo.getConfiguration().getReflectorFactory();
+        //TODO @咩咩 有空一起来撸完这反射模块.
+        Reflector reflector = reflectorFactory.findForClass(clazz);
         List<Field> list = getAllFields(clazz);
         // 标记是否读取到主键
         boolean isReadPK = false;
@@ -246,14 +259,17 @@ public class TableInfoHelper {
 
         List<TableFieldInfo> fieldList = new ArrayList<>();
         for (Field field : list) {
+            if (excludeProperty.contains(field.getName())) {
+                continue;
+            }
             /*
              * 主键ID 初始化
              */
             if (!isReadPK) {
                 if (existTableId) {
-                    isReadPK = initTableIdWithAnnotation(dbConfig, tableInfo, field, clazz);
+                    isReadPK = initTableIdWithAnnotation(dbConfig, tableInfo, field, clazz, reflector);
                 } else {
-                    isReadPK = initTableIdWithoutAnnotation(dbConfig, tableInfo, field, clazz);
+                    isReadPK = initTableIdWithoutAnnotation(dbConfig, tableInfo, field, clazz, reflector);
                 }
                 if (isReadPK) {
                     continue;
@@ -302,10 +318,11 @@ public class TableInfoHelper {
      * @param tableInfo 表信息
      * @param field     字段
      * @param clazz     实体类
+     * @param reflector Reflector
      * @return true 继续下一个属性判断，返回 continue;
      */
     private static boolean initTableIdWithAnnotation(GlobalConfig.DbConfig dbConfig, TableInfo tableInfo,
-                                                     Field field, Class<?> clazz) {
+                                                     Field field, Class<?> clazz, Reflector reflector) {
         TableId tableId = field.getAnnotation(TableId.class);
         boolean underCamel = tableInfo.isUnderCamel();
         if (tableId != null) {
@@ -335,7 +352,7 @@ public class TableInfoHelper {
                 tableInfo.setKeyRelated(checkRelated(underCamel, field.getName(), column))
                     .setKeyColumn(column)
                     .setKeyProperty(field.getName())
-                    .setKeyType(field.getType());
+                    .setKeyType(reflector.getGetterType(field.getName()));
                 return true;
             } else {
                 throwExceptionId(clazz);
@@ -352,10 +369,11 @@ public class TableInfoHelper {
      * @param tableInfo 表信息
      * @param field     字段
      * @param clazz     实体类
+     * @param reflector Reflector
      * @return true 继续下一个属性判断，返回 continue;
      */
     private static boolean initTableIdWithoutAnnotation(GlobalConfig.DbConfig dbConfig, TableInfo tableInfo,
-                                                        Field field, Class<?> clazz) {
+                                                        Field field, Class<?> clazz, Reflector reflector) {
         String column = field.getName();
         if (dbConfig.isCapitalMode()) {
             column = column.toUpperCase();
@@ -366,7 +384,7 @@ public class TableInfoHelper {
                     .setIdType(dbConfig.getIdType())
                     .setKeyColumn(column)
                     .setKeyProperty(field.getName())
-                    .setKeyType(field.getType());
+                    .setKeyType(reflector.getGetterType(field.getName()));
                 return true;
             } else {
                 throwExceptionId(clazz);
@@ -450,8 +468,9 @@ public class TableInfoHelper {
 
     /**
      * 自定义 KEY 生成器
-     * @deprecated 3.1.2
+     *
      * @see #genKeyGenerator(String, TableInfo, MapperBuilderAssistant)
+     * @deprecated 3.1.2
      */
     @Deprecated
     public static KeyGenerator genKeyGenerator(TableInfo tableInfo, MapperBuilderAssistant builderAssistant,
